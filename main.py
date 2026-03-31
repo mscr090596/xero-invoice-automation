@@ -30,7 +30,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 XERO_AUTH_URL = "https://login.xero.com/identity/connect/authorize"
 XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
 XERO_CONNECTIONS_URL = "https://api.xero.com/connections"
-XERO_SCOPES = "openid profile email accounting.transactions offline_access"
+XERO_SCOPES = "openid profile email accounting.transactions accounting.settings offline_access"
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Xero Invoice Automation")
