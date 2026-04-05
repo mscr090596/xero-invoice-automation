@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import traceback
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -282,6 +283,7 @@ async def webhook_xero(request: Request):
             await _process_invoice(invoice_id, token)
         except Exception as exc:
             print(f"[webhook] error processing invoice {invoice_id}: {exc}")
+            traceback.print_exc()
 
     return Response(status_code=200)
 
