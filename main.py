@@ -6,7 +6,6 @@ import json
 import os
 import secrets
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -14,12 +13,6 @@ import asyncpg
 import httpx
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import RedirectResponse
-
-from xero_python.accounting import AccountingApi
-from xero_python.accounting.models import Invoice, Invoices, LineItem
-from xero_python.api_client import ApiClient
-from xero_python.api_client.configuration import Configuration
-from xero_python.api_client.oauth2 import OAuth2Token
 
 # ── Config ────────────────────────────────────────────────────────────────────
 XERO_CLIENT_ID = os.environ["XERO_CLIENT_ID"]
@@ -31,12 +24,12 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 XERO_AUTH_URL = "https://login.xero.com/identity/connect/authorize"
 XERO_TOKEN_URL = "https://identity.xero.com/connect/token"
 XERO_CONNECTIONS_URL = "https://api.xero.com/connections"
+XERO_API_BASE = "https://api.xero.com/api.xro/2.0"
 XERO_SCOPES = "openid profile email offline_access accounting.invoices"
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Xero Invoice Automation")
 _pool: Optional[asyncpg.Pool] = None
-_executor = ThreadPoolExecutor(max_workers=4)
 
 
 @app.on_event("startup")
@@ -194,90 +187,71 @@ def _fmt_xero_date(date_val) -> str:
     return f"{dt.day} {dt.strftime('%B')} {dt.year}"
 
 
-def _build_api_client(token: dict) -> ApiClient:
-    """Build an authenticated Xero API client for the current token payload."""
-    oauth2_token = OAuth2Token(
-        client_id=XERO_CLIENT_ID,
-        client_secret=XERO_CLIENT_SECRET,
-    )
-    expires_at = token["expires_at"]
-    if isinstance(expires_at, datetime):
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        else:
-            expires_at = expires_at.astimezone(timezone.utc)
-        expires_ts = expires_at.timestamp()
-    else:
-        expires_ts = None
-
-    token_payload = {
-        "access_token": token["access_token"],
-        "refresh_token": token.get("refresh_token"),
-        "token_type": "Bearer",
-        "expires_at": expires_ts,
+async def _process_invoice(invoice_id: str, token: dict) -> None:
+    tenant_id = token["tenant_id"]
+    headers = {
+        "Authorization": f"Bearer {token['access_token']}",
+        "Xero-Tenant-Id": tenant_id,
+        "Accept": "application/json",
     }
 
-    config = Configuration(oauth2_token=oauth2_token)
-    return ApiClient(
-        configuration=config,
-        oauth2_token_getter=lambda: token_payload,
-    )
+    async with httpx.AsyncClient() as client:
+        # Get the invoice
+        resp = await client.get(
+            f"{XERO_API_BASE}/Invoices/{invoice_id}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-
-async def _process_invoice(invoice_id: str, token: dict) -> None:
-    loop = asyncio.get_running_loop()
-    api_client = _build_api_client(token)
-    accounting = AccountingApi(api_client)
-    tenant_id = token["tenant_id"]
-
-    invoices_resp = await loop.run_in_executor(
-        _executor,
-        lambda: accounting.get_invoice(xero_tenant_id=tenant_id, invoice_id=invoice_id),
-    )
-    if not invoices_resp.invoices:
+    invoices = data.get("Invoices", [])
+    if not invoices:
         return
 
-    invoice = invoices_resp.invoices[0]
-    if not invoice.date:
+    invoice = invoices[0]
+    invoice_date = invoice.get("Date")
+    if not invoice_date:
         return
 
-    formatted_date = _fmt_xero_date(invoice.date)
+    formatted_date = _fmt_xero_date(invoice_date)
     target_suffix = f"Service date: {formatted_date}"
 
     needs_update = False
     patched_items = []
 
-    for item in invoice.line_items or []:
-        desc = item.description or ""
+    for item in invoice.get("LineItems", []):
+        desc = item.get("Description", "")
         if target_suffix in desc:
             patched_items.append(item)
         else:
             needs_update = True
-            patched_items.append(
-                LineItem(
-                    line_item_id=item.line_item_id,
-                    description=f"Fortnightly clean \u2014 {target_suffix}",
-                    quantity=item.quantity,
-                    unit_amount=item.unit_amount,
-                    account_code=item.account_code,
-                    tax_type=item.tax_type,
-                )
-            )
+            patched_items.append({
+                "LineItemID": item.get("LineItemID"),
+                "Description": f"Fortnightly clean \u2014 {target_suffix}",
+                "Quantity": item.get("Quantity"),
+                "UnitAmount": item.get("UnitAmount"),
+                "AccountCode": item.get("AccountCode"),
+                "TaxType": item.get("TaxType"),
+            })
 
     if not needs_update:
         return
 
-    patch = Invoices(
-        invoices=[Invoice(invoice_id=invoice.invoice_id, line_items=patched_items)]
-    )
-    await loop.run_in_executor(
-        _executor,
-        lambda: accounting.update_invoice(
-            xero_tenant_id=tenant_id,
-            invoice_id=invoice_id,
-            invoices=patch,
-        ),
-    )
+    update_payload = {
+        "Invoices": [{
+            "InvoiceID": invoice_id,
+            "LineItems": patched_items,
+        }]
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{XERO_API_BASE}/Invoices/{invoice_id}",
+            headers={**headers, "Content-Type": "application/json"},
+            json=update_payload,
+        )
+        resp.raise_for_status()
+
     print(f"[invoice] updated {invoice_id} with '{target_suffix}'")
 
 
