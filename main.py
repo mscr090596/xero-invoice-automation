@@ -19,6 +19,7 @@ from xero_python.accounting import AccountingApi
 from xero_python.accounting.models import Invoice, Invoices, LineItem
 from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
+from xero_python.api_client.oauth2 import OAuth2Token
 
 # ── Config ────────────────────────────────────────────────────────────────────
 XERO_CLIENT_ID = os.environ["XERO_CLIENT_ID"]
@@ -193,11 +194,39 @@ def _fmt_xero_date(date_val) -> str:
     return f"{dt.day} {dt.strftime('%B')} {dt.year}"
 
 
+def _build_api_client(token: dict) -> ApiClient:
+    """Build an authenticated Xero API client for the current token payload."""
+    oauth2_token = OAuth2Token(
+        client_id=XERO_CLIENT_ID,
+        client_secret=XERO_CLIENT_SECRET,
+    )
+    expires_at = token["expires_at"]
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+        expires_ts = expires_at.timestamp()
+    else:
+        expires_ts = None
+
+    token_payload = {
+        "access_token": token["access_token"],
+        "refresh_token": token.get("refresh_token"),
+        "token_type": "Bearer",
+        "expires_at": expires_ts,
+    }
+
+    config = Configuration(oauth2_token=oauth2_token)
+    return ApiClient(
+        configuration=config,
+        oauth2_token_getter=lambda: token_payload,
+    )
+
+
 async def _process_invoice(invoice_id: str, token: dict) -> None:
     loop = asyncio.get_running_loop()
-    config = Configuration()
-    config.access_token = token["access_token"]
-    api_client = ApiClient(configuration=config)
+    api_client = _build_api_client(token)
     accounting = AccountingApi(api_client)
     tenant_id = token["tenant_id"]
 
