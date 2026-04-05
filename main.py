@@ -228,7 +228,7 @@ async def _process_invoice(invoice_id: str, token: dict) -> None:
             needs_update = True
             patched_items.append({
                 "LineItemID": item.get("LineItemID"),
-                "Description": f"Fortnightly clean \u2014 {target_suffix}",
+                "Description": target_suffix,
                 "Quantity": item.get("Quantity"),
                 "UnitAmount": item.get("UnitAmount"),
                 "AccountCode": item.get("AccountCode"),
