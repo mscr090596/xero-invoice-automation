@@ -176,7 +176,7 @@ def _valid_signature(body: bytes, header: str) -> bool:
 
 
 def _fmt_xero_date(date_val) -> str:
-    """Return 'D Month YYYY' from a Xero date value (datetime or /Date(ms)/ string)."""
+    """Return 'D Month YYYY' for the day before the Xero invoice date."""
     if isinstance(date_val, datetime):
         dt = date_val if date_val.tzinfo else date_val.replace(tzinfo=timezone.utc)
     elif isinstance(date_val, str) and date_val.startswith("/Date("):
@@ -185,6 +185,8 @@ def _fmt_xero_date(date_val) -> str:
         dt = datetime.fromtimestamp(int(ms_str) / 1000, tz=timezone.utc)
     else:
         dt = datetime.fromisoformat(str(date_val).replace("Z", "+00:00"))
+
+    dt -= timedelta(days=1)
     return f"{dt.day} {dt.strftime('%B')} {dt.year}"
 
 
